@@ -4,16 +4,18 @@ const express = require('express');
 module.exports = function createHealthRouter(db) {
     const router = express.Router();
 
-    router.get('/health', (req, res) => {
+    router.get('/health', async (req, res) => {
         try {
-            const result = db.prepare('SELECT 1 AS ok').get();
+            const result = await db.query('SELECT 1 AS ok');
 
             res.json({
                 status: 'ONLINE',
-                database: result.ok === 1 ? 'CONNECTED' : 'ERROR',
+                database: result.rows[0].ok === 1 ? 'CONNECTED' : 'ERROR',
                 timestamp: new Date().toISOString()
             });
         } catch (error) {
+            console.error('Health check failed:', error.message);
+
             res.status(500).json({
                 status: 'ERROR',
                 database: 'DISCONNECTED'
