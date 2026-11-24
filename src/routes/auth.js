@@ -7,7 +7,7 @@ const { OAuth2Client } = require('google-auth-library');
 const scrypt = promisify(crypto.scrypt);
 
 const GOOGLE_CLIENT_ID =
-    '564611382464-4lkm5khes538eb5cademoscnauu82gmo.apps.googleusercontent.com';
+    '562380402936-m266d1cfohine2ncra34oo8kjaqn7mvq.apps.googleusercontent.com';
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
