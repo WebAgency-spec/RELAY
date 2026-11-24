@@ -2,13 +2,17 @@
 {
   "name": "relay",
   "version": "1.0.0",
-  "description": "Relay real-time messaging app",
+  "description": "RELAY - Real-time messaging platform",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "relay",
+    "messaging",
+    "chat",
+    "realtime"
+  ],
   "license": "ISC",
   "type": "commonjs",
   "engines": {
