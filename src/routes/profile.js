@@ -1,54 +1,48 @@
 
 const express = require('express');
-const routerFactory = express.Router;
 
 module.exports = function createProfileRouter(db) {
-    const router = routerFactory();
-
-    // Safe migrations: add profile fields without deleting existing data.
-    const columns = new Set(
-        db.prepare('PRAGMA table_info(users)').all().map(column => column.name)
-    );
-
-    if (!columns.has('profile_bio')) {
-        db.exec('ALTER TABLE users ADD COLUMN profile_bio TEXT NOT NULL DEFAULT \'\'');
-    }
-
-    if (!columns.has('profile_image')) {
-        db.exec('ALTER TABLE users ADD COLUMN profile_image TEXT');
-    }
+    const router = express.Router();
 
     function getSessionId(req) {
-        for (const cookie of (req.headers.cookie || '').split(';')) {
+        const cookies = (req.headers.cookie || '').split(';');
+
+        for (const cookie of cookies) {
             const separator = cookie.indexOf('=');
-            if (separator < 0) continue;
+            if (separator === -1) continue;
 
             if (cookie.slice(0, separator).trim() === 'relay_session') {
-                return cookie.slice(separator + 1).trim();
+                try {
+                    return decodeURIComponent(
+                        cookie.slice(separator + 1).trim()
+                    );
+                } catch {
+                    return null;
+                }
             }
         }
 
         return null;
     }
 
-    function getUser(req) {
+    async function getUser(req) {
         const sessionId = getSessionId(req);
-        if (!sessionId) return null;
 
-        const session = db.prepare(`
-            SELECT user_id
-            FROM sessions
-            WHERE id = ? AND expires_at > ?
-        `).get(sessionId, new Date().toISOString());
+        if (!sessionId || !/^[a-f0-9]{64}$/i.test(sessionId)) {
+            return null;
+        }
 
-        if (!session) return null;
+        const result = await db.query(
+            `SELECT u.id, u.username, u.display_name, u.email,
+                    u.profile_bio, u.profile_image
+             FROM sessions s
+             JOIN users u ON u.id = s.user_id
+             WHERE s.id = $1
+               AND s.expires_at > NOW()`,
+            [sessionId]
+        );
 
-        return db.prepare(`
-            SELECT id, username, display_name, email,
-                   profile_bio, profile_image
-            FROM users
-            WHERE id = ?
-        `).get(session.user_id);
+        return result.rows[0] || null;
     }
 
     function publicProfile(user) {
@@ -56,116 +50,158 @@ module.exports = function createProfileRouter(db) {
             id: user.id,
             username: user.username,
             displayName: user.display_name,
-            email: user.email || '',
+            email: user.email,
             bio: user.profile_bio || '',
             avatar: user.profile_image || null
         };
     }
 
-    router.get('/', (req, res) => {
-        const user = getUser(req);
+    function handleError(res, error) {
+        console.error('Profile error:', error.message);
 
-        if (!user) {
-            return res.status(401).json({ error: 'Please sign in again.' });
-        }
-
-        return res.json({ user: publicProfile(user) });
-    });
-
-    router.put('/', (req, res) => {
-        const user = getUser(req);
-
-        if (!user) {
-            return res.status(401).json({ error: 'Please sign in again.' });
-        }
-
-        const username = typeof req.body?.username === 'string'
-            ? req.body.username.trim()
-            : '';
-
-        const displayName = typeof req.body?.displayName === 'string'
-            ? req.body.displayName.trim()
-            : '';
-
-        const bio = typeof req.body?.bio === 'string'
-            ? req.body.bio.trim()
-            : '';
-
-        const avatar = req.body?.avatar;
-
-        if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
-            return res.status(400).json({
-                error: 'Username must be 3–20 letters, numbers, or underscores.'
+        if (!res.headersSent) {
+            res.status(500).json({
+                error: 'A profile error occurred.'
             });
         }
+    }
 
-        if (displayName.length < 1 || displayName.length > 60) {
-            return res.status(400).json({
-                error: 'Display name must be 1–60 characters.'
-            });
-        }
-
-        if (bio.length > 160) {
-            return res.status(400).json({
-                error: 'Bio cannot exceed 160 characters.'
-            });
-        }
-
-        if (avatar !== undefined && avatar !== null) {
-            if (
-                typeof avatar !== 'string' ||
-                avatar.length > 850000 ||
-                !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(avatar)
-            ) {
-                return res.status(400).json({
-                    error: 'Upload a valid JPEG image under the size limit.'
-                });
-            }
-        }
-
+    // GET CURRENT PROFILE
+    router.get('/', async (req, res) => {
         try {
-            const duplicate = db.prepare(`
-                SELECT id FROM users
-                WHERE username = ? COLLATE NOCASE AND id != ?
-            `).get(username, user.id);
+            const user = await getUser(req);
 
-            if (duplicate) {
-                return res.status(409).json({
-                    error: 'That username is already taken.'
+            if (!user) {
+                return res.status(401).json({
+                    error: 'Please sign in.'
                 });
             }
-
-            if (avatar === undefined) {
-                db.prepare(`
-                    UPDATE users
-                    SET username = ?, display_name = ?, profile_bio = ?
-                    WHERE id = ?
-                `).run(username, displayName, bio, user.id);
-            } else {
-                db.prepare(`
-                    UPDATE users
-                    SET username = ?, display_name = ?,
-                        profile_bio = ?, profile_image = ?
-                    WHERE id = ?
-                `).run(username, displayName, bio, avatar, user.id);
-            }
-
-            const updated = db.prepare(`
-                SELECT id, username, display_name, email,
-                       profile_bio, profile_image
-                FROM users WHERE id = ?
-            `).get(user.id);
 
             return res.json({
-                ok: true,
-                user: publicProfile(updated)
+                success: true,
+                user: publicProfile(user)
             });
         } catch (error) {
-            console.error('Profile update failed:', error.message);
+            handleError(res, error);
+        }
+    });
 
-            return res.status(500).json({
-                error: 'Could not save your profile. Please try again.'
+    // UPDATE PROFILE
+    router.put('/', async (req, res) => {
+        try {
+            const user = await getUser(req);
+
+            if (!user) {
+                return res.status(401).json({
+                    error: 'Please sign in.'
+                });
+            }
+
+            const {
+                username,
+                displayName,
+                bio,
+                avatar
+            } = req.body;
+
+            if (
+                typeof username !== 'string' ||
+                typeof displayName !== 'string' ||
+                typeof bio !== 'string'
+            ) {
+                return res.status(400).json({
+                    error: 'Username, display name and bio are required.'
+                });
+            }
+
+            const cleanUsername = username.trim();
+            const cleanDisplayName = displayName.trim();
+            const cleanBio = bio.trim();
+
+            if (!/^[a-zA-Z0-9_]{3,20}$/.test(cleanUsername)) {
+                return res.status(400).json({
+                    error: 'Username must be 3-20 characters and contain only letters, numbers and underscores.'
+                });
+            }
+
+            if (
+                cleanDisplayName.length < 1 ||
+                cleanDisplayName.length > 60
+            ) {
+                return res.status(400).json({
+                    error: 'Display name must be between 1 and 60 characters.'
+                });
+            }
+
+            if (cleanBio.length > 160) {
+                return res.status(400).json({
+                    error: 'Bio must not exceed 160 characters.'
+                });
+            }
+
+            let cleanAvatar = user.profile_image || null;
+
+            if (avatar !== undefined) {
+                if (avatar === null || avatar === '') {
+                    cleanAvatar = null;
+                } else if (
+                    typeof avatar !== 'string' ||
+                    avatar.length > 850000 ||
+                    !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(avatar)
+                ) {
+                    return res.status(400).json({
+                        error: 'Avatar must be a valid JPEG image under the size limit.'
+                    });
+                } else {
+                    cleanAvatar = avatar;
+                }
+            }
+
+            const duplicate = await db.query(
+                `SELECT id
+                 FROM users
+                 WHERE LOWER(username) = LOWER($1)
+                   AND id <> $2
+                 LIMIT 1`,
+                [cleanUsername, user.id]
+            );
+
+            if (duplicate.rows.length) {
+                return res.status(409).json({
+                    error: 'Username is already taken.'
+                });
+            }
+
+            const result = await db.query(
+                `UPDATE users
+                 SET username = $1,
+                     display_name = $2,
+                     profile_bio = $3,
+                     profile_image = $4
+                 WHERE id = $5
+                 RETURNING id, username, display_name, email,
+                           profile_bio, profile_image`,
+                [
+                    cleanUsername,
+                    cleanDisplayName,
+                    cleanBio,
+                    cleanAvatar,
+                    user.id
+                ]
+            );
+
+            return res.json({
+                success: true,
+                user: publicProfile(result.rows[0])
             });
+        } catch (error) {
+            if (error.code === '23505') {
+                return res.status(409).json({
+                    error: 'Username is already taken.'
+                });
+            }
+
+            handleError(res, error);
         }
     });
 
