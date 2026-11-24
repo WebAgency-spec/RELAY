@@ -5,14 +5,18 @@ const activeCalls = new Map();
 const activeCallByUser = new Map();
 
 module.exports = function registerChatHandlers(io, db, socket) {
+    function acknowledge(callback, result) {
+        if (typeof callback === 'function') callback(result);
+    }
+
     async function initializeSocket() {
         try {
             const cookieHeader = socket.handshake.headers.cookie || '';
 
             const sessionCookie = cookieHeader
                 .split(';')
-                .map((part) => part.trim())
-                .find((part) => part.startsWith('relay_session='));
+                .map(part => part.trim())
+                .find(part => part.startsWith('relay_session='));
 
             if (!sessionCookie) {
                 socket.disconnect(true);
@@ -21,49 +25,40 @@ module.exports = function registerChatHandlers(io, db, socket) {
 
             const sessionId = sessionCookie.slice('relay_session='.length);
 
-            if (!/^[a-f0-9]{64}$/i.test(sessionId)) {
+            if (!/^[a-f0-9]{64}$/.test(sessionId)) {
                 socket.disconnect(true);
                 return;
             }
 
-            const sessionResult = await db.query(`
-                SELECT user_id
-                FROM sessions
-                WHERE id = $1 AND expires_at > NOW()
-            `, [sessionId]);
+            const sessionResult = await db.query(
+                `SELECT user_id
+                 FROM sessions
+                 WHERE id = $1 AND expires_at > NOW()`,
+                [sessionId]
+            );
 
-            if (!sessionResult.rows.length) {
+            const userId = sessionResult.rows[0]?.user_id;
+
+            if (!userId) {
                 socket.disconnect(true);
                 return;
             }
-
-            const userId = Number(sessionResult.rows[0].user_id);
 
             socket.data.userId = userId;
             socket.join(`user:${userId}`);
 
-            const existingConversations = await db.query(`
-                SELECT conversation_id
-                FROM conversation_members
-                WHERE user_id = $1
-            `, [userId]);
+            const conversations = await db.query(
+                `SELECT conversation_id
+                 FROM conversation_members
+                 WHERE user_id = $1`,
+                [userId]
+            );
 
-            for (const conversation of existingConversations.rows) {
+            for (const conversation of conversations.rows) {
                 socket.join(`conversation:${conversation.conversation_id}`);
             }
 
-            console.log(
-                'Authenticated Relay socket:',
-                socket.id,
-                'User:',
-                userId
-            );
-
-            function acknowledge(callback, result) {
-                if (typeof callback === 'function') {
-                    callback(result);
-                }
-            }
+            console.log('Authenticated RELAY socket:', socket.id, 'User:', userId);
 
             function getCallForParticipant(callId) {
                 if (typeof callId !== 'string') return null;
@@ -72,10 +67,7 @@ module.exports = function registerChatHandlers(io, db, socket) {
 
                 if (!call) return null;
 
-                if (
-                    call.callerId !== userId &&
-                    call.recipientId !== userId
-                ) {
+                if (call.callerId !== userId && call.recipientId !== userId) {
                     return null;
                 }
 
@@ -103,24 +95,21 @@ module.exports = function registerChatHandlers(io, db, socket) {
                 try {
                     const conversationId = Number(payload?.conversationId);
 
-                    if (
-                        !Number.isSafeInteger(conversationId) ||
-                        conversationId < 1
-                    ) {
+                    if (!Number.isSafeInteger(conversationId) || conversationId < 1) {
                         return acknowledge(callback, {
                             ok: false,
                             error: 'Invalid conversation.'
                         });
                     }
 
-                    const membership = await db.query(`
-                        SELECT 1
-                        FROM conversation_members
-                        WHERE conversation_id = $1
-                          AND user_id = $2
-                    `, [conversationId, userId]);
+                    const membership = await db.query(
+                        `SELECT 1
+                         FROM conversation_members
+                         WHERE conversation_id = $1 AND user_id = $2`,
+                        [conversationId, userId]
+                    );
 
-                    if (!membership.rows.length) {
+                    if (!membership.rowCount) {
                         return acknowledge(callback, {
                             ok: false,
                             error: 'Conversation not found.'
@@ -132,7 +121,6 @@ module.exports = function registerChatHandlers(io, db, socket) {
                     return acknowledge(callback, { ok: true });
                 } catch (error) {
                     console.error('Chat join failed:', error.message);
-
                     return acknowledge(callback, {
                         ok: false,
                         error: 'Could not join conversation.'
@@ -144,15 +132,11 @@ module.exports = function registerChatHandlers(io, db, socket) {
             socket.on('chat:send', async (payload, callback) => {
                 try {
                     const conversationId = Number(payload?.conversationId);
-
                     const body = typeof payload?.body === 'string'
                         ? payload.body.trim()
                         : '';
 
-                    if (
-                        !Number.isSafeInteger(conversationId) ||
-                        conversationId < 1
-                    ) {
+                    if (!Number.isSafeInteger(conversationId) || conversationId < 1) {
                         return acknowledge(callback, {
                             ok: false,
                             error: 'Invalid conversation.'
@@ -166,65 +150,59 @@ module.exports = function registerChatHandlers(io, db, socket) {
                         });
                     }
 
-                    const membership = await db.query(`
-                        SELECT 1
-                        FROM conversation_members
-                        WHERE conversation_id = $1
-                          AND user_id = $2
-                    `, [conversationId, userId]);
+                    const membership = await db.query(
+                        `SELECT 1
+                         FROM conversation_members
+                         WHERE conversation_id = $1 AND user_id = $2`,
+                        [conversationId, userId]
+                    );
 
-                    if (!membership.rows.length) {
+                    if (!membership.rowCount) {
                         return acknowledge(callback, {
                             ok: false,
                             error: 'Conversation not found.'
                         });
                     }
 
-                    const result = await db.query(`
-                        INSERT INTO messages (
-                            conversation_id,
-                            sender_id,
-                            body
-                        )
-                        VALUES ($1, $2, $3)
-                        RETURNING id, conversation_id, sender_id, body, created_at
-                    `, [conversationId, userId, body]);
+                    const result = await db.query(
+                        `INSERT INTO messages (conversation_id, sender_id, body)
+                         VALUES ($1, $2, $3)
+                         RETURNING id, conversation_id, sender_id, body, created_at`,
+                        [conversationId, userId, body]
+                    );
 
-                    const savedMessage = result.rows[0];
+                    const messageRow = result.rows[0];
 
-                    const userResult = await db.query(`
-                        SELECT display_name
-                        FROM users
-                        WHERE id = $1
-                    `, [userId]);
+                    const userResult = await db.query(
+                        `SELECT display_name
+                         FROM users
+                         WHERE id = $1`,
+                        [userId]
+                    );
 
                     const message = {
-                        id: savedMessage.id,
-                        conversationId: savedMessage.conversation_id,
-                        senderId: savedMessage.sender_id,
-                        senderName: userResult.rows[0]?.display_name || 'Relay user',
-                        body: savedMessage.body,
-                        createdAt: savedMessage.created_at
+                        id: messageRow.id,
+                        conversationId: messageRow.conversation_id,
+                        senderId: messageRow.sender_id,
+                        senderName: userResult.rows[0]?.display_name || 'RELAY user',
+                        body: messageRow.body,
+                        createdAt: messageRow.created_at
                     };
 
-                    const members = await db.query(`
-                        SELECT user_id
-                        FROM conversation_members
-                        WHERE conversation_id = $1
-                    `, [conversationId]);
+                    const members = await db.query(
+                        `SELECT user_id
+                         FROM conversation_members
+                         WHERE conversation_id = $1`,
+                        [conversationId]
+                    );
 
                     for (const member of members.rows) {
-                        io.to(`user:${member.user_id}`)
-                            .emit('chat:message', message);
+                        io.to(`user:${member.user_id}`).emit('chat:message', message);
                     }
 
-                    return acknowledge(callback, {
-                        ok: true,
-                        message
-                    });
+                    return acknowledge(callback, { ok: true, message });
                 } catch (error) {
                     console.error('Message save failed:', error.message);
-
                     return acknowledge(callback, {
                         ok: false,
                         error: 'Could not save your message.'
@@ -237,30 +215,27 @@ module.exports = function registerChatHandlers(io, db, socket) {
                 try {
                     const conversationId = Number(payload?.conversationId);
 
-                    if (
-                        !Number.isSafeInteger(conversationId) ||
-                        conversationId < 1
-                    ) {
+                    if (!Number.isSafeInteger(conversationId) || conversationId < 1) {
                         return acknowledge(callback, {
                             ok: false,
                             error: 'Invalid conversation.'
                         });
                     }
 
-                    const conversationResult = await db.query(`
-                        SELECT id, is_group
-                        FROM conversations
-                        WHERE id = $1
-                    `, [conversationId]);
+                    const conversationResult = await db.query(
+                        `SELECT id, is_group
+                         FROM conversations
+                         WHERE id = $1`,
+                        [conversationId]
+                    );
 
-                    const membersResult = await db.query(`
-                        SELECT
-                            cm.user_id AS user_id,
-                            u.display_name AS display_name
-                        FROM conversation_members cm
-                        JOIN users u ON u.id = cm.user_id
-                        WHERE cm.conversation_id = $1
-                    `, [conversationId]);
+                    const membersResult = await db.query(
+                        `SELECT cm.user_id, u.display_name
+                         FROM conversation_members cm
+                         JOIN users u ON u.id = cm.user_id
+                         WHERE cm.conversation_id = $1`,
+                        [conversationId]
+                    );
 
                     const conversation = conversationResult.rows[0];
                     const members = membersResult.rows;
@@ -269,7 +244,7 @@ module.exports = function registerChatHandlers(io, db, socket) {
                         !conversation ||
                         conversation.is_group ||
                         members.length !== 2 ||
-                        !members.some((member) => Number(member.user_id) === userId)
+                        !members.some(member => member.user_id === userId)
                     ) {
                         return acknowledge(callback, {
                             ok: false,
@@ -278,7 +253,7 @@ module.exports = function registerChatHandlers(io, db, socket) {
                     }
 
                     const recipient = members.find(
-                        (member) => Number(member.user_id) !== userId
+                        member => member.user_id !== userId
                     );
 
                     if (!recipient) {
@@ -288,11 +263,9 @@ module.exports = function registerChatHandlers(io, db, socket) {
                         });
                     }
 
-                    const recipientId = Number(recipient.user_id);
-
                     if (
                         activeCallByUser.has(userId) ||
-                        activeCallByUser.has(recipientId)
+                        activeCallByUser.has(recipient.user_id)
                     ) {
                         return acknowledge(callback, {
                             ok: false,
@@ -300,39 +273,37 @@ module.exports = function registerChatHandlers(io, db, socket) {
                         });
                     }
 
-                    const callerResult = await db.query(`
-                        SELECT display_name
-                        FROM users
-                        WHERE id = $1
-                    `, [userId]);
+                    const callerResult = await db.query(
+                        `SELECT display_name FROM users WHERE id = $1`,
+                        [userId]
+                    );
 
                     const call = {
                         callId: randomUUID(),
                         conversationId,
                         callerId: userId,
-                        recipientId,
+                        recipientId: recipient.user_id,
                         status: 'ringing'
                     };
 
                     activeCalls.set(call.callId, call);
                     activeCallByUser.set(userId, call.callId);
-                    activeCallByUser.set(recipientId, call.callId);
+                    activeCallByUser.set(recipient.user_id, call.callId);
 
-                    io.to(`user:${recipientId}`).emit('call:incoming', {
+                    io.to(`user:${recipient.user_id}`).emit('call:incoming', {
                         callId: call.callId,
                         conversationId,
                         callerId: userId,
-                        callerName: callerResult.rows[0]?.display_name || 'Relay user'
+                        callerName: callerResult.rows[0]?.display_name || 'RELAY user'
                     });
 
                     return acknowledge(callback, {
                         ok: true,
                         callId: call.callId,
-                        recipientName: recipient.display_name || 'Relay user'
+                        recipientName: recipient.display_name || 'RELAY user'
                     });
                 } catch (error) {
                     console.error('Call start failed:', error.message);
-
                     return acknowledge(callback, {
                         ok: false,
                         error: 'Could not start the call.'
@@ -344,11 +315,7 @@ module.exports = function registerChatHandlers(io, db, socket) {
             socket.on('call:accept', (payload, callback) => {
                 const call = getCallForParticipant(payload?.callId);
 
-                if (
-                    !call ||
-                    call.recipientId !== userId ||
-                    call.status !== 'ringing'
-                ) {
+                if (!call || call.recipientId !== userId || call.status !== 'ringing') {
                     return acknowledge(callback, {
                         ok: false,
                         error: 'This call is no longer available.'
@@ -370,11 +337,7 @@ module.exports = function registerChatHandlers(io, db, socket) {
             socket.on('call:reject', (payload, callback) => {
                 const call = getCallForParticipant(payload?.callId);
 
-                if (
-                    !call ||
-                    call.recipientId !== userId ||
-                    call.status !== 'ringing'
-                ) {
+                if (!call || call.recipientId !== userId || call.status !== 'ringing') {
                     return acknowledge(callback, {
                         ok: false,
                         error: 'This call is no longer available.'
@@ -408,11 +371,7 @@ module.exports = function registerChatHandlers(io, db, socket) {
 
                     const value = payload?.[field];
 
-                    if (
-                        !value ||
-                        typeof value !== 'object' ||
-                        Array.isArray(value)
-                    ) {
+                    if (!value || typeof value !== 'object' || Array.isArray(value)) {
                         return acknowledge(callback, {
                             ok: false,
                             error: 'Invalid call signaling data.'
@@ -446,7 +405,7 @@ module.exports = function registerChatHandlers(io, db, socket) {
 
             // DISCONNECT
             socket.on('disconnect', () => {
-                console.log('Relay socket disconnected:', socket.id);
+                console.log('RELAY socket disconnected:', socket.id);
 
                 const room = io.sockets.adapter.rooms.get(`user:${userId}`);
 
@@ -461,7 +420,7 @@ module.exports = function registerChatHandlers(io, db, socket) {
             });
 
         } catch (error) {
-            console.error('Socket initialization failed:', error.message);
+            console.error('Socket authentication failed:', error.message);
             socket.disconnect(true);
         }
     }
