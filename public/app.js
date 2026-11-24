@@ -1,6 +1,6 @@
 
 const GOOGLE_CLIENT_ID =
-    '564611382464-4lkm5khes538eb5cademoscnauu82gmo.apps.googleusercontent.com';
+    '562380402936-m266d1cfohine2ncra34oo8kjaqn7mvq.apps.googleusercontent.com';
 
 const $ = (selector) => document.querySelector(selector);
 
