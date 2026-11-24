@@ -1,304 +1,285 @@
+
 const express = require('express');
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const { OAuth2Client } = require('google-auth-library');
 
+const scrypt = promisify(crypto.scrypt);
+
 const GOOGLE_CLIENT_ID =
     '564611382464-4lkm5khes538eb5cademoscnauu82gmo.apps.googleusercontent.com';
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
-const scryptAsync = promisify(crypto.scrypt);
+
 const SESSION_DURATION = 7 * 24 * 60 * 60 * 1000;
 
 module.exports = function createAuthRouter(db) {
     const router = express.Router();
 
-    // Safely add Google account fields to existing databases.
-    const columns = db.prepare('PRAGMA table_info(users)').all();
-    const columnNames = new Set(columns.map(column => column.name));
+    function parseCookies(req) {
+        const cookies = {};
 
-    if (!columnNames.has('email')) {
-        db.exec('ALTER TABLE users ADD COLUMN email TEXT');
-    }
-
-    if (!columnNames.has('google_sub')) {
-        db.exec('ALTER TABLE users ADD COLUMN google_sub TEXT');
-    }
-
-    db.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub
-        ON users(google_sub)
-        WHERE google_sub IS NOT NULL
-    `);
-
-    function readSessionId(req) {
-        const cookies = (req.headers.cookie || '').split(';');
-
-        for (const cookie of cookies) {
+        (req.headers.cookie || '').split(';').forEach((cookie) => {
             const separator = cookie.indexOf('=');
-            if (separator < 0) continue;
+            if (separator === -1) return;
 
             const name = cookie.slice(0, separator).trim();
             const value = cookie.slice(separator + 1).trim();
 
-            if (name === 'relay_session') return value;
-        }
+            try {
+                cookies[name] = decodeURIComponent(value);
+            } catch {
+                cookies[name] = value;
+            }
+        });
 
-        return null;
+        return cookies;
     }
 
     function setSessionCookie(res, sessionId) {
+        const secure = process.env.NODE_ENV === 'production'
+            ? '; Secure'
+            : '';
+
         res.setHeader(
             'Set-Cookie',
-            `relay_session=${sessionId}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_DURATION / 1000}`
+            `relay_session=${sessionId}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_DURATION / 1000}${secure}`
         );
     }
 
     function clearSessionCookie(res) {
+        const secure = process.env.NODE_ENV === 'production'
+            ? '; Secure'
+            : '';
+
         res.setHeader(
             'Set-Cookie',
-            'relay_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0'
+            `relay_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secure}`
         );
     }
 
-    function createSession(userId, res) {
+    async function createSession(userId, res) {
         const sessionId = crypto.randomBytes(32).toString('hex');
-        const expiresAt = new Date(
-            Date.now() + SESSION_DURATION
-        ).toISOString();
 
-        db.prepare(`
-            INSERT INTO sessions (id, user_id, expires_at)
-            VALUES (?, ?, ?)
-        `).run(sessionId, userId, expiresAt);
+        const expiresAt = new Date(Date.now() + SESSION_DURATION);
+
+        await db.query(
+            `INSERT INTO sessions (id, user_id, expires_at)
+             VALUES ($1, $2, $3)`,
+            [sessionId, userId, expiresAt]
+        );
 
         setSessionCookie(res, sessionId);
     }
 
-    function getAuthenticatedUser(req) {
-        const sessionId = readSessionId(req);
-        if (!sessionId) return null;
+    async function getAuthenticatedUser(req) {
+        const sessionId = parseCookies(req).relay_session;
 
-        const session = db.prepare(`
-            SELECT user_id
-            FROM sessions
-            WHERE id = ? AND expires_at > ?
-        `).get(sessionId, new Date().toISOString());
+        if (!sessionId || !/^[a-f0-9]{64}$/i.test(sessionId)) {
+            return null;
+        }
 
-        if (!session) return null;
+        const result = await db.query(
+            `SELECT users.id, users.username, users.display_name,
+                    users.email, users.profile_bio, users.profile_image
+             FROM sessions
+             JOIN users ON users.id = sessions.user_id
+             WHERE sessions.id = $1
+               AND sessions.expires_at > NOW()`,
+            [sessionId]
+        );
 
-        return db.prepare(`
-            SELECT id, username, display_name, email
-            FROM users
-            WHERE id = ?
-        `).get(session.user_id);
+        return result.rows[0] || null;
+    }
+
+    function publicUser(user) {
+        return {
+            id: user.id,
+            username: user.username,
+            displayName: user.display_name,
+            email: user.email,
+            bio: user.profile_bio || '',
+            avatar: user.profile_image || null
+        };
     }
 
     async function hashPassword(password) {
         const salt = crypto.randomBytes(16).toString('hex');
-        const derivedKey = await scryptAsync(password, salt, 64);
+
+        const derivedKey = await scrypt(password, salt, 64);
 
         return `scrypt$${salt}$${derivedKey.toString('hex')}`;
     }
 
     async function verifyPassword(password, storedHash) {
-        try {
-            const parts = storedHash.split('$');
-            if (parts.length !== 3 || parts[0] !== 'scrypt') {
-                return false;
-            }
-
-            const [, salt, storedKey] = parts;
-
-            if (!/^[a-f0-9]{32}$/.test(salt)) return false;
-            if (!/^[a-f0-9]{128}$/.test(storedKey)) return false;
-
-            const derivedKey = await scryptAsync(password, salt, 64);
-            const expectedKey = Buffer.from(storedKey, 'hex');
-
-            return crypto.timingSafeEqual(derivedKey, expectedKey);
-        } catch {
+        if (!storedHash || typeof storedHash !== 'string') {
             return false;
+        }
+
+        const parts = storedHash.split('$');
+
+        if (parts.length !== 3 || parts[0] !== 'scrypt') {
+            return false;
+        }
+
+        const [, salt, storedKey] = parts;
+
+        if (!/^[a-f0-9]{32}$/i.test(salt) ||
+            !/^[a-f0-9]{128}$/i.test(storedKey)) {
+            return false;
+        }
+
+        const derivedKey = await scrypt(password, salt, 64);
+        const expectedKey = Buffer.from(storedKey, 'hex');
+
+        return crypto.timingSafeEqual(derivedKey, expectedKey);
+    }
+
+    function handleError(res, error) {
+        console.error('Authentication error:', error.message);
+
+        if (!res.headersSent) {
+            res.status(500).json({
+                error: 'An authentication error occurred.'
+            });
         }
     }
 
-    function validateEmail(email) {
-        return typeof email === 'string' &&
-            email.length <= 254 &&
-            /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    }
-
-    function validateUsername(username) {
-        return typeof username === 'string' &&
-            /^[a-zA-Z0-9_]{3,20}$/.test(username);
-    }
-
-    // STEP 1: Finish registration after the user chooses a username.
-    // The frontend collects email/password on the first screen and
-    // submits all three values when the username screen is completed.
+    // REGISTER
     router.post('/register', async (req, res) => {
         try {
-            const email = typeof req.body?.email === 'string'
-                ? req.body.email.trim().toLowerCase()
-                : '';
+            const { email, password, username } = req.body;
 
-            const password = req.body?.password;
-            const username = typeof req.body?.username === 'string'
-                ? req.body.username.trim()
-                : '';
+            if (
+                typeof email !== 'string' ||
+                typeof password !== 'string' ||
+                typeof username !== 'string'
+            ) {
+                return res.status(400).json({
+                    error: 'Please provide all required fields.'
+                });
+            }
 
-            if (!validateEmail(email)) {
+            const cleanEmail = email.trim().toLowerCase();
+            const cleanUsername = username.trim();
+
+            if (
+                !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) ||
+                cleanEmail.length > 254
+            ) {
                 return res.status(400).json({
                     error: 'Enter a valid email address.'
                 });
             }
 
-            if (
-                typeof password !== 'string' ||
-                password.length < 8 ||
-                password.length > 128
-            ) {
+            if (password.length < 8 || password.length > 128) {
                 return res.status(400).json({
                     error: 'Password must be between 8 and 128 characters.'
                 });
             }
 
-            if (!validateUsername(username)) {
+            if (!/^[a-zA-Z0-9_]{3,20}$/.test(cleanUsername)) {
                 return res.status(400).json({
-                    error: 'Username must be 3–20 characters using letters, numbers, or underscores.'
+                    error: 'Username must be 3-20 characters and contain only letters, numbers, and underscores.'
                 });
             }
 
-            const existingEmail = db.prepare(`
-                SELECT id FROM users WHERE email = ? COLLATE NOCASE
-            `).get(email);
+            const existing = await db.query(
+                `SELECT id FROM users
+                 WHERE LOWER(email) = LOWER($1)
+                    OR LOWER(username) = LOWER($2)
+                 LIMIT 1`,
+                [cleanEmail, cleanUsername]
+            );
 
-            if (existingEmail) {
+            if (existing.rows.length) {
                 return res.status(409).json({
-                    error: 'An account with this email already exists. Please sign in.'
-                });
-            }
-
-            const existingUsername = db.prepare(`
-                SELECT id FROM users WHERE username = ? COLLATE NOCASE
-            `).get(username);
-
-            if (existingUsername) {
-                return res.status(409).json({
-                    error: 'That username is already taken. Try another.'
+                    error: 'Email or username is already registered.'
                 });
             }
 
             const passwordHash = await hashPassword(password);
 
-            let result;
+            const result = await db.query(
+                `INSERT INTO users (username, display_name, email, password_hash)
+                 VALUES ($1, $2, $3, $4)
+                 RETURNING id, username, display_name, email,
+                           profile_bio, profile_image`,
+                [cleanUsername, cleanUsername, cleanEmail, passwordHash]
+            );
 
-            try {
-                result = db.prepare(`
-                    INSERT INTO users
-                        (username, display_name, password_hash, email)
-                    VALUES (?, ?, ?, ?)
-                `).run(username, username, passwordHash, email);
-            } catch (error) {
-                if (error.code === 'ERR_SQLITE_ERROR') {
-                    const message = error.message || '';
+            const user = result.rows[0];
 
-                    if (message.includes('UNIQUE constraint failed')) {
-                        return res.status(409).json({
-                            error: 'That username or email is already registered.'
-                        });
-                    }
-                }
-
-                throw error;
-            }
-
-            const userId = Number(result.lastInsertRowid);
-            createSession(userId, res);
+            await createSession(user.id, res);
 
             return res.status(201).json({
-                ok: true,
-                user: {
-                    id: userId,
-                    username,
-                    displayName: username,
-                    email
-                }
+                success: true,
+                user: publicUser(user)
             });
         } catch (error) {
-            console.error('Registration failed:', error.message);
-
-            return res.status(500).json({
-                error: 'Could not create your account. Please try again.'
-            });
-        }
-    });
-
-    // Sign in using email and password.
-    router.post('/login', async (req, res) => {
-        try {
-            const email = typeof req.body?.email === 'string'
-                ? req.body.email.trim().toLowerCase()
-                : '';
-
-            const password = req.body?.password;
-
-            if (
-                !validateEmail(email) ||
-                typeof password !== 'string' ||
-                password.length > 128
-            ) {
-                return res.status(400).json({
-                    error: 'Enter a valid email and password.'
+            if (error.code === '23505') {
+                return res.status(409).json({
+                    error: 'Email or username is already registered.'
                 });
             }
 
-            const user = db.prepare(`
-                SELECT id, username, display_name, email, password_hash
-                FROM users
-                WHERE email = ? COLLATE NOCASE
-            `).get(email);
+            handleError(res, error);
+        }
+    });
+
+    // LOGIN
+    router.post('/login', async (req, res) => {
+        try {
+            const { email, password } = req.body;
 
             if (
-                !user ||
-                !(await verifyPassword(password, user.password_hash))
+                typeof email !== 'string' ||
+                typeof password !== 'string'
             ) {
+                return res.status(400).json({
+                    error: 'Enter your email and password.'
+                });
+            }
+
+            const result = await db.query(
+                `SELECT id, username, display_name, email,
+                        password_hash, profile_bio, profile_image
+                 FROM users
+                 WHERE LOWER(email) = LOWER($1)
+                 LIMIT 1`,
+                [email.trim()]
+            );
+
+            const user = result.rows[0];
+
+            if (!user || !(await verifyPassword(password, user.password_hash))) {
                 return res.status(401).json({
                     error: 'Incorrect email or password.'
                 });
             }
 
-            createSession(user.id, res);
+            await createSession(user.id, res);
 
             return res.json({
-                ok: true,
-                user: {
-                    id: user.id,
-                    username: user.username,
-                    displayName: user.display_name,
-                    email: user.email
-                }
+                success: true,
+                user: publicUser(user)
             });
         } catch (error) {
-            console.error('Login failed:', error.message);
-
-            return res.status(500).json({
-                error: 'Could not sign in. Please try again.'
-            });
+            handleError(res, error);
         }
     });
 
-    // Existing Google sign-in — preserved.
+    // GOOGLE LOGIN
     router.post('/google', async (req, res) => {
         try {
-            const credential = req.body?.credential;
+            const { credential } = req.body;
 
             if (
                 typeof credential !== 'string' ||
                 credential.length > 10000
             ) {
                 return res.status(400).json({
-                    error: 'Missing or invalid Google credential.'
+                    error: 'Google credential is missing or invalid.'
                 });
             }
 
@@ -309,100 +290,117 @@ module.exports = function createAuthRouter(db) {
 
             const payload = ticket.getPayload();
 
-            if (
-                !payload?.sub ||
-                !payload.email ||
-                payload.email_verified !== true
-            ) {
+            if (!payload || !payload.email || !payload.email_verified || !payload.sub) {
                 return res.status(401).json({
-                    error: 'Google account email could not be verified.'
+                    error: 'Google account verification failed.'
                 });
             }
 
             const googleSub = payload.sub;
             const email = payload.email.toLowerCase();
-            const displayName = (payload.name || email).slice(0, 100);
+            const displayName = payload.name || email.split('@')[0];
 
-            let user = db.prepare(`
-                SELECT id
-                FROM users
-                WHERE google_sub = ?
-            `).get(googleSub);
+            let result = await db.query(
+                `SELECT id, username, display_name, email,
+                        profile_bio, profile_image
+                 FROM users
+                 WHERE google_sub = $1
+                 LIMIT 1`,
+                [googleSub]
+            );
+
+            let user = result.rows[0];
 
             if (user) {
-                db.prepare(`
-                    UPDATE users
-                    SET email = ?, display_name = ?
-                    WHERE id = ?
-                `).run(email, displayName, user.id);
-            } else {
-                const internalUsername = `google_${googleSub}`;
-                const unusablePassword = crypto.randomBytes(32).toString('hex');
-
-                const result = db.prepare(`
-                    INSERT INTO users
-                        (username, display_name, password_hash, email, google_sub)
-                    VALUES (?, ?, ?, ?, ?)
-                `).run(
-                    internalUsername,
-                    displayName,
-                    unusablePassword,
-                    email,
-                    googleSub
+                result = await db.query(
+                    `UPDATE users
+                     SET email = $1, display_name = $2
+                     WHERE id = $3
+                     RETURNING id, username, display_name, email,
+                               profile_bio, profile_image`,
+                    [email, displayName, user.id]
                 );
 
-                user = { id: Number(result.lastInsertRowid) };
+                user = result.rows[0];
+            } else {
+                const username = `google_${googleSub}`;
+                const randomPassword = await hashPassword(
+                    crypto.randomBytes(48).toString('hex')
+                );
+
+                result = await db.query(
+                    `INSERT INTO users
+                        (username, display_name, email, google_sub, password_hash)
+                     VALUES ($1, $2, $3, $4, $5)
+                     RETURNING id, username, display_name, email,
+                               profile_bio, profile_image`,
+                    [username, displayName, email, googleSub, randomPassword]
+                );
+
+                user = result.rows[0];
             }
 
-            createSession(user.id, res);
+            await createSession(user.id, res);
 
             return res.json({
-                ok: true,
-                user: {
-                    id: user.id,
-                    displayName,
-                    email,
-                    picture: payload.picture || null
-                }
+                success: true,
+                user: publicUser(user)
             });
         } catch (error) {
-            console.error('Google sign-in failed:', error.message);
-
-            return res.status(401).json({
-                error: 'Google sign-in failed. Check your Google client ID and server logs.'
-            });
-        }
-    });
-
-    // Restore the existing session after a refresh or browser restart.
-    router.get('/me', (req, res) => {
-        const user = getAuthenticatedUser(req);
-
-        if (!user) {
-            return res.status(401).json({
-                error: 'You are not signed in.'
-            });
-        }
-
-        return res.json({
-            user: {
-                id: user.id,
-                username: user.username,
-                displayName: user.display_name,
-                email: user.email
+            if (error.code === '23505') {
+                return res.status(409).json({
+                    error: 'This Google account conflicts with an existing account.'
+                });
             }
-        });
+
+            console.error('Google authentication error:', error.message);
+
+            return res.status(401).json({
+                error: 'Google authentication failed.'
+            });
+        }
     });
 
-    router.post('/logout', (req, res) => {
-        const sessionId = readSessionId(req);
+    // RESTORE SESSION
+    router.get('/me', async (req, res) => {
+        try {
+            const user = await getAuthenticatedUser(req);
 
-        if (sessionId) {
-            db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+            if (!user) {
+                return res.status(401).json({
+                    authenticated: false
+                });
+            }
+
+            return res.json({
+                authenticated: true,
+                user: publicUser(user)
+            });
+        } catch (error) {
+            handleError(res, error);
         }
+    });
 
-        clearSessionCookie(res);
-        return res.json({ ok: true });
+    // LOGOUT
+    router.post('/logout', async (req, res) => {
+        try {
+            const sessionId = parseCookies(req).relay_session;
+
+            if (sessionId && /^[a-f0-9]{64}$/i.test(sessionId)) {
+                await db.query(
+                    'DELETE FROM sessions WHERE id = $1',
+                    [sessionId]
+                );
+            }
+
+            clearSessionCookie(res);
+
+            return res.json({
+                success: true
+            });
+        } catch (error) {
+            handleError(res, error);
+        }
     });
 
     return router;
