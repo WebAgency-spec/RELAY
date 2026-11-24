@@ -4,14 +4,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#101116">
-    <link rel="icon" type="image/png" href="/favicon.png">
     <meta name="theme-color" content="#080611">
+
+    <link rel="icon" type="image/png" href="/favicon.png">
+
     <title>Relay — Messages, in motion.</title>
-    <link rel="stylesheet" href="/css/style.css">
-    <link rel="stylesheet" href="/css/accounts.css">
+
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/accounts.css">
+
+    <!-- Google Sign-In -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
+
 <body>
     <section id="login-screen" class="login-screen">
         <div class="login-card">
@@ -163,8 +169,11 @@
         </main>
     </div>
 
+    <!-- Socket.IO -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="/js/app.js"></script>
-    <script src="/js/accounts.js"></script>
+
+    <!-- Application scripts -->
+    <script src="/app.js"></script>
+    <script src="/accounts.js"></script>
 </body>
 </html>
