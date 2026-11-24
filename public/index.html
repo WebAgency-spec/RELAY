@@ -1,0 +1,168 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#101116">
+    <title>Relay — Messages, in motion.</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/accounts.css">
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+    <section id="login-screen" class="login-screen">
+        <div class="login-card">
+            <div class="brand-mark login-mark">R</div>
+            <h1>relay<span>.</span></h1>
+            <p class="login-tagline">Messages, in motion.</p>
+            <div class="login-divider"></div>
+
+            <section id="account-create-step">
+                <h2>Your people.<br><span>Your space.</span></h2>
+                <p class="login-description">
+                    Create your account and find your people.
+                </p>
+
+                <form id="account-step-one" class="account-form">
+                    <label for="signup-email">Email address</label>
+                    <input id="signup-email" type="email" autocomplete="email"
+                        placeholder="you@example.com" maxlength="254" required>
+
+                    <label for="signup-password">Create a password</label>
+                    <input id="signup-password" type="password"
+                        autocomplete="new-password" placeholder="At least 8 characters"
+                        minlength="8" maxlength="128" required>
+
+                    <button class="account-primary" type="submit">
+                        Continue <span>→</span>
+                    </button>
+                </form>
+
+                <form id="account-step-two" class="account-form" hidden>
+                    <p class="account-step-label">STEP 2 OF 2</p>
+                    <h2>Make it <span>yours.</span></h2>
+                    <p class="login-description">
+                        Choose your unique Relay username.
+                    </p>
+
+                    <label for="signup-username">Username</label>
+                    <input id="signup-username" type="text"
+                        autocomplete="username" placeholder="your_username"
+                        minlength="3" maxlength="20"
+                        pattern="[A-Za-z0-9_]{3,20}"
+                        title="Use 3–20 letters, numbers, or underscores." required>
+
+                    <p class="account-hint">
+                        3–20 characters: letters, numbers, underscores.
+                    </p>
+
+                    <div class="account-button-row">
+                        <button id="signup-back" class="account-secondary"
+                            type="button">Back</button>
+                        <button class="account-primary" type="submit">
+                            Create account <span>↗</span>
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+            <section id="account-login-panel" hidden>
+                <h2>Welcome <span>back.</span></h2>
+                <p class="login-description">Sign in to continue your conversations.</p>
+
+                <form id="account-login-form" class="account-form">
+                    <label for="login-email">Email address</label>
+                    <input id="login-email" type="email" autocomplete="email"
+                        placeholder="you@example.com" maxlength="254" required>
+
+                    <label for="login-password">Password</label>
+                    <input id="login-password" type="password"
+                        autocomplete="current-password" placeholder="Your password"
+                        maxlength="128" required>
+
+                    <button class="account-primary" type="submit">
+                        Sign in <span>→</span>
+                    </button>
+                </form>
+            </section>
+
+            <p id="account-status" class="account-status"
+                role="status" aria-live="polite"></p>
+
+            <div class="account-switch">
+                <span id="account-switch-text">Already have an account?</span>
+                <button id="account-switch-button" type="button">Sign in</button>
+            </div>
+
+            <div class="account-or"><span>OR</span></div>
+
+            <div id="google-signin"></div>
+            <p id="login-status" class="login-status" role="status">
+                Continue with Google instead.
+            </p>
+        </div>
+    </section>
+
+    <div id="app-screen" class="app" hidden>
+        <aside class="sidebar">
+            <header class="brand">
+                <div class="brand-mark">R</div>
+                <div>
+                    <h1>relay<span>.</span></h1>
+                    <p>Messages, in motion.</p>
+                </div>
+            </header>
+
+            <div class="section-heading">
+                <span>YOUR SPACE</span>
+                <button id="new-chat" type="button" aria-label="New conversation">+</button>
+            </div>
+
+            <div class="search-box">
+                <span>⌕</span>
+                <input id="search" type="search"
+                    placeholder="Find a conversation..." autocomplete="off">
+            </div>
+
+            <div id="conversation-list" class="conversation-list">
+                <div class="empty-state">
+                    <div class="empty-icon">✳</div>
+                    <h3>Your space, your people.</h3>
+                    <p>Your conversations will appear here.</p>
+                </div>
+            </div>
+
+            <footer class="sidebar-footer">
+                <span class="status-dot"></span>
+                <span>LOCAL CONNECTION</span>
+                <button id="sign-out" type="button">SIGN OUT</button>
+                <span class="version">RELAY / 01</span>
+            </footer>
+        </aside>
+
+        <main class="chat-panel">
+            <div class="welcome">
+                <div class="welcome-orb"><span>R</span></div>
+                <p class="eyebrow">A DIFFERENT KIND OF CONNECTION</p>
+                <h2>Good conversations<br>start <span>somewhere.</span></h2>
+                <p class="welcome-description">
+                    A quieter space for the people who matter.
+                    Your Relay experience starts here.
+                </p>
+                <button id="start-chat" class="primary-button" type="button">
+                    Start a conversation <span>↗</span>
+                </button>
+                <div class="welcome-bottom">
+                    <span>PRIVATE BY DESIGN</span>
+                    <span>BUILT FOR REAL-TIME MESSAGING</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/app.js"></script>
+    <script src="/js/accounts.js"></script>
+</body>
+</html>

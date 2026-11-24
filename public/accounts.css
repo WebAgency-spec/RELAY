@@ -1,0 +1,173 @@
+
+[hidden] {
+    display: none !important;
+}
+
+.login-card {
+    box-sizing: border-box;
+    width: min(100% - 32px, 430px);
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+}
+
+.account-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 22px;
+    text-align: left;
+}
+
+.account-form label {
+    color: #d5d5df;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.account-form input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 46px;
+    padding: 12px 14px;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 12px;
+    outline: none;
+    background: #171820;
+    color: #f5f5fa;
+    font: inherit;
+    font-size: 14px;
+}
+
+.account-form input:focus {
+    border-color: #ff7648;
+    box-shadow: 0 0 0 3px rgba(255,118,72,.12);
+}
+
+.account-form input::placeholder {
+    color: #777987;
+}
+
+.account-primary,
+.account-secondary {
+    min-height: 46px;
+    padding: 12px 16px;
+    border: 0;
+    border-radius: 12px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.account-primary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+    background: linear-gradient(110deg, #ff7648, #ff9b58);
+    color: #171116;
+}
+
+.account-secondary {
+    background: #242530;
+    color: #ededf5;
+}
+
+.account-primary:disabled,
+.account-secondary:disabled {
+    cursor: wait;
+    opacity: .65;
+}
+
+.account-button-row {
+    display: grid;
+    grid-template-columns: .7fr 1.3fr;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.account-step-label {
+    margin: 4px 0 0;
+    color: #ff946a;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 2px;
+}
+
+.account-hint {
+    margin: 0;
+    color: #858795;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.account-status {
+    min-height: 18px;
+    margin: 12px 0 0;
+    color: #ff9a79;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.account-status:empty {
+    display: none;
+}
+
+.account-switch {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 14px;
+    color: #a4a5b2;
+    font-size: 12px;
+}
+
+.account-switch button {
+    padding: 4px;
+    border: 0;
+    background: transparent;
+    color: #ff946a;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.account-or {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 18px 0 14px;
+    color: #777987;
+    font-size: 10px;
+    letter-spacing: 2px;
+}
+
+.account-or::before,
+.account-or::after {
+    content: "";
+    height: 1px;
+    flex: 1;
+    background: rgba(255,255,255,.1);
+}
+
+#google-signin {
+    display: flex;
+    justify-content: center;
+    min-height: 40px;
+}
+
+@media (max-height: 760px) {
+    .login-screen {
+        align-items: flex-start;
+        padding-top: 16px;
+        padding-bottom: 16px;
+        box-sizing: border-box;
+    }
+
+    .login-card {
+        max-height: none;
+    }
+}
